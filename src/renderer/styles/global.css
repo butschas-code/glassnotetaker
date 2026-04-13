@@ -1,0 +1,81 @@
+:root {
+  color-scheme: dark;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  --label-primary: rgba(255, 255, 255, 0.92);
+  --label-secondary: rgba(235, 235, 245, 0.6);
+  --separator: rgba(255, 255, 255, 0.1);
+  --separator-soft: rgba(255, 255, 255, 0.06);
+  --hairline: rgba(255, 255, 255, 0.18);
+  --accent: #0a84ff;
+  --accent-pressed: #0077ed;
+  --danger: #ff453a;
+  --warn: #ff9f0a;
+  --ok: #32d74b;
+  --panel-radius: 26px;
+  --icon-button-bg: rgba(255, 255, 255, 0.06);
+  --row-hover: rgba(255, 255, 255, 0.06);
+  --pill-glass: rgba(255, 255, 255, 0.08);
+  --fg: var(--label-primary);
+  --sub: var(--label-secondary);
+  --surface: transparent;
+  --stroke: var(--hairline);
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  --radius: var(--panel-radius);
+  --radius-sm: 10px;
+  --panel-bg: rgba(30, 30, 32, 0.82);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: var(--font);
+  background: transparent;
+  color: var(--label-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+}
+
+.nw-floating-panel {
+  position: relative;
+  border-radius: var(--panel-radius);
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--panel-bg);
+  -webkit-backdrop-filter: blur(50px) saturate(1.8);
+  backdrop-filter: blur(50px) saturate(1.8);
+  box-shadow:
+    inset 0 0 0 0.75px var(--hairline),
+    0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.nw-floating-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.1), transparent 30%);
+}
+
+.glass-panel {
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow);
+}
+
+.glass-inset {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+}

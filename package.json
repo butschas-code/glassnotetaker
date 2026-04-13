@@ -1,0 +1,73 @@
+{
+  "name": "glasscall-notes",
+  "version": "1.5.0",
+  "description": "GlassCall Notes — local-first macOS meeting notes from system audio",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && electron-builder",
+    "build:mac": "npm run native:audio && npm run copy-native && electron-vite build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac",
+    "build:vite": "electron-vite build",
+    "preview": "electron-vite preview",
+    "native:audio": "cd native/GlassCallAudioCapture && swift build -c release",
+    "python:install": "bash python-worker/install.sh",
+    "copy-native": "bash scripts/copy-native-for-packaging.sh"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.12.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.glasscall.notes",
+    "productName": "GlassCall Notes",
+    "directories": {
+      "output": "release"
+    },
+    "asarUnpack": [
+      "**/node_modules/sql.js/**",
+      "python-worker/**"
+    ],
+    "files": [
+      "out/**/*",
+      "python-worker/**/*",
+      "!python-worker/.venv",
+      "!python-worker/**/__pycache__"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": ".",
+        "filter": ["GlassCallAudioCapture"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "GlassCall Notes may use the microphone if you choose mixed capture; system audio uses Screen Recording permission.",
+        "NSScreenCaptureUsageDescription": "GlassCall Notes needs Screen Recording permission to capture system audio from your calls (Zoom, Meet, Teams)."
+      }
+    }
+  }
+}

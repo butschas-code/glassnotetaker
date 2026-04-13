@@ -1,0 +1,9 @@
+# Install ONLY via install.sh (torch first, then this file).
+#
+# Supported: Python 3.10 – 3.13 (3.12 recommended). Python 3.14 is not supported by WhisperX yet.
+# Use: PYTHON=/path/to/python3.12 bash install.sh
+
+numpy>=1.26.0
+huggingface_hub>=0.20.0,<1.0.0
+# 3.8.x uses newer faster-whisper / ctranslate2 and avoids old pins that break on py3.13+
+whisperx>=3.8.0,<4.0.0
