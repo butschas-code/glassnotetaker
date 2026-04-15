@@ -27,6 +27,7 @@ const defaultSettings: AppSettings = {
   whisperxBatchSize: 8,
   outputFolder: '',
   transcriptLanguage: 'en',
+  micInputGainDb: 6,
   autoOpenNotion: true,
   recordingMode: 'system_only'
 }
@@ -134,6 +135,11 @@ export function getSettings(): AppSettings {
         (merged as Record<string, unknown>)[k] = v === 'true' || v === '1'
       } else if (k === 'whisperxBatchSize') {
         (merged as Record<string, unknown>)[k] = Number(v) || defaultSettings.whisperxBatchSize
+      } else if (k === 'micInputGainDb') {
+        const n = Number(v)
+        ;(merged as Record<string, unknown>)[k] = Number.isFinite(n)
+          ? Math.max(0, Math.min(24, n))
+          : defaultSettings.micInputGainDb
       } else {
         (merged as Record<string, unknown>)[k] = v
       }

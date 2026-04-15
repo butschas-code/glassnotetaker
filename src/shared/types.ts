@@ -28,13 +28,11 @@ export interface ActionItem {
 
 export interface MeetingSummaryJson {
   title: string
+  /** Multi-paragraph narrative; only facts supported by the transcript */
   summary: string
   participants: string[]
-  topics: string[]
   decisions: string[]
   action_items: ActionItem[]
-  open_questions: string[]
-  next_steps: string[]
 }
 
 export interface AppSettings {
@@ -57,6 +55,11 @@ export interface AppSettings {
   whisperxBatchSize: number
   outputFolder: string
   transcriptLanguage: string
+  /**
+   * Boost microphone level before ASR (dB). Applied in capture (Web Audio) and when mixing mic + system in the Python worker.
+   * 0 = unity; typical quiet laptop mics: 6–12.
+   */
+  micInputGainDb: number
   autoOpenNotion: boolean
   recordingMode: RecordingMode
 }

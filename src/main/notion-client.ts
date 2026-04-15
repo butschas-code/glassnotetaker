@@ -35,16 +35,6 @@ function heading2(text: string): BlockObjectRequest {
   }
 }
 
-function heading3(text: string): BlockObjectRequest {
-  return {
-    object: 'block',
-    type: 'heading_3',
-    heading_3: {
-      rich_text: [{ type: 'text', text: { content: text } }]
-    }
-  }
-}
-
 function bulletList(items: string[]): BlockObjectRequest[] {
   return items.map(
     (t): BlockObjectRequest => ({
@@ -72,17 +62,6 @@ function todoList(items: { text: string; checked?: boolean }[]): BlockObjectRequ
 
 function divider(): BlockObjectRequest {
   return { object: 'block', type: 'divider', divider: {} }
-}
-
-function callout(text: string, emoji: string): BlockObjectRequest {
-  return {
-    object: 'block',
-    type: 'callout',
-    callout: {
-      icon: { type: 'emoji', emoji: emoji as any },
-      rich_text: [{ type: 'text', text: { content: text } }]
-    }
-  }
 }
 
 function formatDuration(sec: number): string {
@@ -128,9 +107,15 @@ export async function createNotionMeetingPage(
 
   const children: BlockObjectRequest[] = []
 
-  // Summary callout at top
-  if (summary.summary) {
-    children.push(callout(summary.summary, '📋'))
+  // Elaborate summary (split on blank lines into paragraphs)
+  const summaryText = summary.summary?.trim() ?? ''
+  if (summaryText) {
+    children.push(heading2('Summary'))
+    const paras = summaryText.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
+    const blocks = paras.length ? paras : [summaryText]
+    for (const para of blocks) {
+      children.push(...richParagraphs(para))
+    }
     children.push(divider())
   }
 
@@ -159,28 +144,10 @@ export async function createNotionMeetingPage(
     children.push(divider())
   }
 
-  // Topics
-  if (summary.topics.length) {
-    children.push(heading2('Topics'))
-    children.push(...bulletList(summary.topics))
-  }
-
   // Decisions
   if (summary.decisions.length) {
     children.push(heading2('Decisions'))
     children.push(...bulletList(summary.decisions))
-  }
-
-  // Open Questions
-  if (summary.open_questions.length) {
-    children.push(heading2('Open Questions'))
-    children.push(...bulletList(summary.open_questions))
-  }
-
-  // Next Steps
-  if (summary.next_steps.length) {
-    children.push(heading2('Next Steps'))
-    children.push(...bulletList(summary.next_steps))
   }
 
   children.push(divider())

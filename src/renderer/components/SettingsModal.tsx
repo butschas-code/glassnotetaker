@@ -138,9 +138,24 @@ export function SettingsModal(props: {
               <input
                 value={form.transcriptLanguage}
                 onChange={(e) => update('transcriptLanguage', e.target.value)}
-                placeholder="en or auto"
+                placeholder="en, de, or auto"
               />
             </label>
+            <label className="field">
+              <span>Microphone gain before transcription (dB)</span>
+              <input
+                type="number"
+                min={0}
+                max={24}
+                step={1}
+                value={form.micInputGainDb}
+                onChange={(e) => update('micInputGainDb', Math.max(0, Math.min(24, Number(e.target.value) || 0)))}
+              />
+            </label>
+            <p className="nw-settings-hint">
+              Boosts your mic in the mix (Web Audio while recording, and ffmpeg when a separate mic file is mixed). 0 =
+              no boost; 6–12 dB often helps quiet laptop mics. Very high values can distort.
+            </p>
           </div>
 
           <div className="nw-settings-section-title">Summarization</div>

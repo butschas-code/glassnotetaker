@@ -27,11 +27,18 @@ function resolveCapturePreload(): string {
   return js
 }
 
-function captureScript(): string {
+function micGainDbToLinear(db: number): number {
+  const clamped = Math.max(0, Math.min(24, db))
+  return Math.pow(10, clamped / 20)
+}
+
+function captureScript(micGainLinear: number): string {
+  const gain = Number.isFinite(micGainLinear) && micGainLinear > 0 ? micGainLinear : 1
   return `
 (async () => {
   const api = window.captureApi;
   const allStreams = [];
+  const MIC_GAIN = ${gain};
 
   try {
     // 1. System audio via getDisplayMedia (loopback)
@@ -75,7 +82,10 @@ function captureScript(): string {
     }
     if (micAudioTracks.length) {
       const micSource = ctx.createMediaStreamSource(new MediaStream(micAudioTracks));
-      micSource.connect(dest);
+      const micGain = ctx.createGain();
+      micGain.gain.value = MIC_GAIN;
+      micSource.connect(micGain);
+      micGain.connect(dest);
     }
 
     // 4. Record the mixed output
@@ -125,7 +135,7 @@ export class SystemAudioCapture {
 
   constructor(
     private readonly outputPath: string,
-    private readonly _opts?: { micPath?: string }
+    private readonly opts?: { micGainDb?: number }
   ) {}
 
   async start(): Promise<void> {
@@ -162,7 +172,8 @@ export class SystemAudioCapture {
     ipcMain.on('capture:ready', this.onReady)
     ipcMain.on('capture:log', this.onLog)
 
-    const js = captureScript()
+      const micDb = this.opts?.micGainDb ?? 6
+      const js = captureScript(micGainDbToLinear(micDb))
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {

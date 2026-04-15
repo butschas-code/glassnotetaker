@@ -95,6 +95,8 @@ export async function runTranscription(
     throw new Error('vibevocal_asr backend is not implemented. Choose whisperx or faster_whisper in Settings.')
   }
 
+  const micGainDb = Math.max(0, Math.min(24, Number(settings.micInputGainDb) || 0))
+
   const args = [
     script,
     '--input',
@@ -112,7 +114,9 @@ export async function runTranscription(
     '--batch-size',
     String(Math.max(2, Math.min(settings.whisperxBatchSize || 8, 16))),
     '--faster-model',
-    settings.whisperModelSize || 'small'
+    settings.whisperModelSize || 'small',
+    '--mic-gain-db',
+    String(micGainDb)
   ]
 
   if (settings.diarizationEnabled) {

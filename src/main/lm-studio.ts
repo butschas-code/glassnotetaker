@@ -3,27 +3,33 @@ import type { AppSettings, MeetingSummaryJson } from '../shared/types'
 
 export const SUMMARIZATION_PROMPT = `You are a meeting-notes JSON generator. You MUST output ONLY a JSON object with no other text.
 
+{{LANGUAGE_DIRECTIVE}}
+
 IMPORTANT: Your entire response must be a single valid JSON object. Do not include any explanation, preamble, or markdown. Start your response with { and end with }.
 
 You will receive a call transcript. Extract the useful content and return this exact JSON structure:
 
-{"title":"short meeting title","summary":"2-3 sentence summary","participants":["Speaker 1","Speaker 2"],"topics":["topic1"],"decisions":["decision1"],"action_items":[{"task":"description","owner":"","due":""}],"open_questions":["question1"],"next_steps":["step1"]}
+{"title":"short meeting title","summary":"…","participants":["Speaker 1","Speaker 2"],"decisions":["decision1"],"action_items":[{"task":"description","owner":"","due":""}]}
+
+The "summary" field must be a DETAILED narrative: at least 3–6 paragraphs separated by blank lines (use \\n\\n between paragraphs in the JSON string). Cover what was actually discussed: context, main points, outcomes, and concrete details — but ONLY if they appear in the transcript. Do not pad with generic filler.
 
 CRITICAL RULES — FOLLOW STRICTLY:
-- ONLY use information that is EXPLICITLY stated in the transcript. NEVER invent, guess, or fabricate content.
-- If the transcript is short, trivial, or contains no real meeting content (e.g. just "test", greetings, silence), return EMPTY arrays and a summary that honestly describes what was said.
-- For a transcript like "test test test", the correct output is: {"title":"Test Recording","summary":"The recording contained only test audio with no meeting content.","participants":[],"topics":[],"decisions":[],"action_items":[],"open_questions":[],"next_steps":[]}
-- NEVER make up project names, tasks, decisions, or speaker names that do not appear in the transcript.
-- NEVER add action items unless someone in the transcript explicitly commits to doing something.
-- If there is nothing meaningful, say so honestly in the summary. Empty arrays are correct and expected.
-- Output ONLY valid JSON, nothing else
-- Use speaker names if mentioned, otherwise use SPEAKER_00 etc
-- Leave owner/due as empty string if unclear
+- ONLY use information that is EXPLICITLY stated in the transcript. NEVER invent, guess, or fabricate names, numbers, commitments, or events.
+- The transcript may contain ASR errors, repeated filler, or nonsensical phrases from poor audio. Treat obvious garble as noise — do NOT invent meaning for it.
+- If the transcript is short, trivial, or contains no real meeting content (e.g. just "test", greetings, silence), use brief paragraphs that honestly describe what was said; use empty arrays where appropriate.
+- NEVER add action items unless someone in the transcript explicitly commits to doing something ("I will …", "ich werde …", "can you …", "kannst du …" followed by agreement).
+- NEVER add decisions unless the transcript contains an explicit choice or agreement.
+- If ASR quality is poor, say so honestly in the summary; do not invent plausible-sounding details.
+- Output ONLY valid JSON, nothing else.
+- Use speaker names if mentioned, otherwise use SPEAKER_00 etc.
+- Leave owner/due as empty string if unclear.
 
 Transcript:
 {{TRANSCRIPT}}`
 
 const RETRY_PROMPT = `Your previous response was not valid JSON. You MUST respond with ONLY a JSON object.
+
+{{LANGUAGE_DIRECTIVE}}
 
 Start with { and end with }. No explanation, no markdown, no preamble.
 
@@ -42,11 +48,15 @@ const FINALIZE_MAX_CHARS = 14_000
 
 const CHUNK_EXTRACTION_PROMPT = `You extract structured facts from ONE part of a longer call transcript (part {{PART_INDEX}} of {{PART_TOTAL}}).
 
+{{LANGUAGE_DIRECTIVE}}
+
 Output ONLY valid JSON with this exact shape (no markdown, no explanation):
-{"participants":[],"topics":[],"decisions":[],"action_items":[{"task":"","owner":"","due":""}],"open_questions":[],"next_steps":[]}
+{"participants":[],"decisions":[],"action_items":[{"task":"","owner":"","due":""}]}
 
 Rules:
 - ONLY facts explicitly stated in THIS segment. Never invent names, tasks, or decisions.
+- The segment may contain ASR errors; treat garble as noise and do NOT invent meaning.
+- Only include an action_item when someone explicitly commits to doing something.
 - Use speaker labels from the segment (e.g. SPEAKER_00) if no names are given.
 - Leave owner and due as "" when unknown.
 - If this segment has no substantive content, return empty arrays.
@@ -54,12 +64,16 @@ Rules:
 Segment:
 {{SEGMENT}}`
 
-const FINALIZE_PROMPT = `You write a meeting title and short summary from consolidated notes (extracted from a long transcript). Output ONLY JSON:
-{"title":"short descriptive title","summary":"2-3 sentences covering main outcomes"}
+const FINALIZE_PROMPT = `You write a meeting title and a DETAILED summary from consolidated notes (extracted from a long transcript). Output ONLY JSON:
+{"title":"short descriptive title","summary":"…"}
+
+{{LANGUAGE_DIRECTIVE}}
+
+The "summary" must be 4–8 paragraphs separated by blank lines (use \\n\\n between paragraphs in the JSON string). Write in clear prose: overview, what was discussed, decisions and commitments, and any notable details — using ONLY information implied by the notes below. If the notes are thin or contradictory, say so honestly; do not invent specifics.
 
 Rules:
-- Use ONLY the bullet lists below. Do not invent participants, tasks, or decisions.
-- If lists are sparse, say so honestly in the summary.
+- Use ONLY the notes below. Do not invent participants, tasks, or decisions.
+- Do not add topics, questions, or "next steps" unless they appear as facts in the notes.
 
 Consolidated notes:
 {{NOTES}}`
@@ -74,11 +88,8 @@ export const MeetingSummarySchema = z.object({
   title: z.string(),
   summary: z.string(),
   participants: z.array(z.string()),
-  topics: z.array(z.string()),
   decisions: z.array(z.string()),
-  action_items: z.array(ActionItemSchema),
-  open_questions: z.array(z.string()),
-  next_steps: z.array(z.string())
+  action_items: z.array(ActionItemSchema)
 })
 
 const ChunkFactsSchema = MeetingSummarySchema.omit({ title: true, summary: true })
@@ -89,12 +100,39 @@ const TitleSummarySchema = z.object({
   summary: z.string()
 })
 
-function buildPrompt(transcript: string): string {
-  return SUMMARIZATION_PROMPT.replace('{{TRANSCRIPT}}', transcript.trim())
+type OutputLang = 'de' | 'en'
+
+function normalizeLanguage(lang: string | null | undefined): OutputLang {
+  const code = (lang || '').trim().toLowerCase().slice(0, 2)
+  return code === 'de' ? 'de' : 'en'
 }
 
-function buildRetryPrompt(transcript: string): string {
-  return RETRY_PROMPT.replace('{{TRANSCRIPT}}', transcript.trim())
+function languageDirective(lang: OutputLang): string {
+  if (lang === 'de') {
+    return [
+      'LANGUAGE: The audio is in German. You MUST write ALL output (title, summary, decisions, action_items) in GERMAN.',
+      'Do not translate to English. Use natural German phrasing.',
+      'Example action_item in German: {"task":"Angebot bis Freitag an Kunde senden","owner":"Max","due":"Freitag"}'
+    ].join('\n')
+  }
+  return [
+    'LANGUAGE: The audio is in English. You MUST write ALL output (title, summary, decisions, action_items) in ENGLISH.',
+    'Example action_item in English: {"task":"Send proposal to client by Friday","owner":"Max","due":"Friday"}'
+  ].join('\n')
+}
+
+function buildPrompt(transcript: string, lang: OutputLang): string {
+  return SUMMARIZATION_PROMPT.replace('{{LANGUAGE_DIRECTIVE}}', languageDirective(lang)).replace(
+    '{{TRANSCRIPT}}',
+    transcript.trim()
+  )
+}
+
+function buildRetryPrompt(transcript: string, lang: OutputLang): string {
+  return RETRY_PROMPT.replace('{{LANGUAGE_DIRECTIVE}}', languageDirective(lang)).replace(
+    '{{TRANSCRIPT}}',
+    transcript.trim()
+  )
 }
 
 function extractJsonObject(text: string): string {
@@ -236,11 +274,8 @@ function splitTranscriptIntoChunks(transcript: string, maxChars: number): string
 function mergeChunkFacts(parts: ChunkFacts[]): Omit<MeetingSummaryJson, 'title' | 'summary'> {
   return {
     participants: dedupeStrings(parts.flatMap((p) => p.participants)),
-    topics: dedupeStrings(parts.flatMap((p) => p.topics)),
     decisions: dedupeStrings(parts.flatMap((p) => p.decisions)),
-    action_items: dedupeActionItems(parts.flatMap((p) => p.action_items)),
-    open_questions: dedupeStrings(parts.flatMap((p) => p.open_questions)),
-    next_steps: dedupeStrings(parts.flatMap((p) => p.next_steps))
+    action_items: dedupeActionItems(parts.flatMap((p) => p.action_items))
   }
 }
 
@@ -267,19 +302,17 @@ function buildConsolidatedNotes(merged: Omit<MeetingSummaryJson, 'title' | 'summ
 
   const body = [
     fmt('Participants', merged.participants, 40),
-    fmt('Topics', merged.topics, 60),
     fmt('Decisions', merged.decisions, 40),
-    `Action items:\n${actionLines}`,
-    fmt('Open questions', merged.open_questions, 40),
-    fmt('Next steps', merged.next_steps, 40)
+    `Action items:\n${actionLines}`
   ].join('\n\n')
 
   if (body.length <= FINALIZE_MAX_CHARS) return body
   return `${body.slice(0, FINALIZE_MAX_CHARS - 80)}\n\n...(notes truncated for model context limit)`
 }
 
-function buildChunkPrompt(segment: string, partIndex: number, partTotal: number): string {
-  return CHUNK_EXTRACTION_PROMPT.replace('{{PART_INDEX}}', String(partIndex))
+function buildChunkPrompt(segment: string, partIndex: number, partTotal: number, lang: OutputLang): string {
+  return CHUNK_EXTRACTION_PROMPT.replace('{{LANGUAGE_DIRECTIVE}}', languageDirective(lang))
+    .replace('{{PART_INDEX}}', String(partIndex))
     .replace('{{PART_TOTAL}}', String(partTotal))
     .replace('{{SEGMENT}}', segment.trim())
 }
@@ -289,9 +322,10 @@ async function extractChunkFactsWithRetries(
   model: string,
   segment: string,
   partIndex: number,
-  partTotal: number
+  partTotal: number,
+  lang: OutputLang
 ): Promise<ChunkFacts> {
-  const userContent = buildChunkPrompt(segment, partIndex, partTotal)
+  const userContent = buildChunkPrompt(segment, partIndex, partTotal, lang)
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: 'You are a JSON-only assistant. You MUST respond with valid JSON and nothing else.' },
     { role: 'user', content: userContent }
@@ -310,7 +344,7 @@ async function extractChunkFactsWithRetries(
           {
             role: 'user',
             content: `Invalid or incomplete JSON. Reply with ONLY this shape, using facts from the SAME segment only:
-{"participants":[],"topics":[],"decisions":[],"action_items":[],"open_questions":[],"next_steps":[]}
+{"participants":[],"decisions":[],"action_items":[]}
 
 Segment (${partIndex}/${partTotal}):
 ${segment.trim()}`
@@ -327,9 +361,13 @@ ${segment.trim()}`
 async function finalizeTitleSummaryWithRetries(
   url: string,
   model: string,
-  notes: string
+  notes: string,
+  lang: OutputLang
 ): Promise<z.infer<typeof TitleSummarySchema>> {
-  const userContent = FINALIZE_PROMPT.replace('{{NOTES}}', notes)
+  const userContent = FINALIZE_PROMPT.replace('{{LANGUAGE_DIRECTIVE}}', languageDirective(lang)).replace(
+    '{{NOTES}}',
+    notes
+  )
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: 'You are a JSON-only assistant. You MUST respond with valid JSON and nothing else.' },
     { role: 'user', content: userContent }
@@ -348,7 +386,7 @@ async function finalizeTitleSummaryWithRetries(
           {
             role: 'user',
             content:
-              'Invalid JSON. Output ONLY: {"title":"...","summary":"..."} using the bullet lists from the previous user message.'
+              'Invalid JSON. Output ONLY: {"title":"...","summary":"..."} — multi-paragraph summary (use \\n\\n between paragraphs), using ONLY the consolidated notes from the previous user message.'
           }
         )
       }
@@ -360,17 +398,18 @@ async function finalizeTitleSummaryWithRetries(
 async function summarizeTranscriptChunked(
   transcript: string,
   url: string,
-  model: string
+  model: string,
+  lang: OutputLang
 ): Promise<MeetingSummaryJson> {
   const segments = splitTranscriptIntoChunks(transcript, TRANSCRIPT_CHUNK_CHARS)
   const facts: ChunkFacts[] = []
   for (let i = 0; i < segments.length; i++) {
-    const part = await extractChunkFactsWithRetries(url, model, segments[i], i + 1, segments.length)
+    const part = await extractChunkFactsWithRetries(url, model, segments[i], i + 1, segments.length, lang)
     facts.push(part)
   }
   const merged = mergeChunkFacts(facts)
   const notes = buildConsolidatedNotes(merged)
-  const { title, summary } = await finalizeTitleSummaryWithRetries(url, model, notes)
+  const { title, summary } = await finalizeTitleSummaryWithRetries(url, model, notes, lang)
   return {
     title,
     summary,
@@ -381,9 +420,10 @@ async function summarizeTranscriptChunked(
 async function summarizeTranscriptSingleShot(
   transcript: string,
   url: string,
-  model: string
+  model: string,
+  lang: OutputLang
 ): Promise<MeetingSummaryJson> {
-  const prompt = buildPrompt(transcript)
+  const prompt = buildPrompt(transcript, lang)
   const messages: { role: string; content: string }[] = [
     { role: 'system', content: 'You are a JSON-only assistant. You MUST respond with valid JSON and nothing else.' },
     { role: 'user', content: prompt }
@@ -401,7 +441,7 @@ async function summarizeTranscriptSingleShot(
       if (attempt < maxAttempts) {
         messages.push(
           { role: 'assistant', content: (e as Error).message.includes('Schema') ? '{}' : 'error' },
-          { role: 'user', content: buildRetryPrompt(transcript) }
+          { role: 'user', content: buildRetryPrompt(transcript, lang) }
         )
       }
     }
@@ -428,11 +468,8 @@ function isTrivialTranscript(transcript: string): MeetingSummaryJson | null {
       title: 'Empty Recording',
       summary: 'The recording contained no speech.',
       participants: [],
-      topics: [],
       decisions: [],
-      action_items: [],
-      open_questions: [],
-      next_steps: []
+      action_items: []
     }
   }
 
@@ -443,20 +480,91 @@ function isTrivialTranscript(transcript: string): MeetingSummaryJson | null {
       title: 'Brief Recording',
       summary: `The recording contained only brief audio: "${spoken}". No meeting content was captured.`,
       participants: [],
-      topics: [],
       decisions: [],
-      action_items: [],
-      open_questions: [],
-      next_steps: []
+      action_items: []
     }
   }
 
   return null
 }
 
+/**
+ * Strip the `[HH:MM:SS] Speaker:` prefix from each line so only spoken content
+ * remains — used for grounding the model's outputs against what was actually said.
+ */
+function stripTranscriptMetadata(transcript: string): string {
+  return transcript
+    .split('\n')
+    .map((line) => line.replace(/^\s*\[[^\]]+\]\s*[^:]+:\s*/, ''))
+    .join(' ')
+}
+
+const GROUNDING_STOPWORDS = new Set([
+  // English
+  'the', 'a', 'an', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'by', 'for', 'with',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+  'will', 'would', 'should', 'could', 'can', 'may', 'might', 'must', 'shall',
+  'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your',
+  'this', 'that', 'these', 'those', 'as', 'if', 'then', 'than', 'so', 'not', 'no',
+  // German
+  'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einen', 'einem', 'einer', 'eines',
+  'und', 'oder', 'aber', 'von', 'zu', 'zur', 'zum', 'in', 'im', 'an', 'am', 'auf', 'bei', 'für', 'mit',
+  'ist', 'sind', 'war', 'waren', 'sein', 'gewesen', 'hat', 'haben', 'hatte', 'hatten',
+  'wird', 'werden', 'würde', 'würden', 'soll', 'sollen', 'kann', 'können', 'muss', 'müssen',
+  'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'mich', 'dich', 'mir', 'dir', 'uns', 'euch', 'ihn', 'ihm',
+  'mein', 'dein', 'sein', 'unser', 'euer', 'dies', 'diese', 'dieser', 'dieses', 'jenes',
+  'als', 'wenn', 'dann', 'auch', 'nicht', 'nein', 'ja', 'noch', 'schon', 'nur', 'sehr'
+])
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !GROUNDING_STOPWORDS.has(t))
+}
+
+/**
+ * Drops action_items and decisions whose content words are not present in the
+ * transcript. Defensive filter against small-model hallucination (Gemma 3 4B
+ * will confidently invent tasks even with a "don't invent" prompt).
+ *
+ * Keeps an item if ≥60% of its content tokens (len ≥3, non-stopword) appear
+ * in the transcript vocabulary, or if it has ≤2 content tokens and any match.
+ */
+function groundSummaryAgainstTranscript(
+  summary: MeetingSummaryJson,
+  transcript: string
+): MeetingSummaryJson {
+  const transcriptText = stripTranscriptMetadata(transcript)
+  const transcriptVocab = new Set(tokenize(transcriptText))
+  if (transcriptVocab.size === 0) return summary
+
+  const isGrounded = (text: string): boolean => {
+    const tokens = tokenize(text)
+    if (tokens.length === 0) return false
+    const matches = tokens.filter((t) => transcriptVocab.has(t)).length
+    if (tokens.length <= 2) return matches >= 1
+    return matches / tokens.length >= 0.6
+  }
+
+  return {
+    ...summary,
+    decisions: summary.decisions.filter(isGrounded),
+    action_items: summary.action_items.filter((a) => isGrounded(a.task)),
+    participants: summary.participants.filter((p) => {
+      // Keep SPEAKER_xx labels verbatim; otherwise require the name to appear.
+      if (/^SPEAKER_\d+$/i.test(p.trim())) return true
+      return isGrounded(p)
+    })
+  }
+}
+
 export async function summarizeTranscriptWithLmStudio(
   transcript: string,
-  settings: AppSettings
+  settings: AppSettings,
+  detectedLanguage?: string | null
 ): Promise<MeetingSummaryJson> {
   const trivial = isTrivialTranscript(transcript)
   if (trivial) return trivial
@@ -469,18 +577,23 @@ export async function summarizeTranscriptWithLmStudio(
   }
 
   const trimmed = transcript.trim()
+  const lang = normalizeLanguage(detectedLanguage)
 
+  let raw: MeetingSummaryJson
   if (trimmed.length > SINGLE_SHOT_MAX_TRANSCRIPT_CHARS) {
-    return summarizeTranscriptChunked(trimmed, url, model)
+    raw = await summarizeTranscriptChunked(trimmed, url, model, lang)
+  } else {
+    try {
+      raw = await summarizeTranscriptSingleShot(trimmed, url, model, lang)
+    } catch (e) {
+      const msg = (e as Error).message
+      if (looksLikeContextLimitError(msg)) {
+        raw = await summarizeTranscriptChunked(trimmed, url, model, lang)
+      } else {
+        throw e
+      }
+    }
   }
 
-  try {
-    return await summarizeTranscriptSingleShot(trimmed, url, model)
-  } catch (e) {
-    const msg = (e as Error).message
-    if (looksLikeContextLimitError(msg)) {
-      return summarizeTranscriptChunked(trimmed, url, model)
-    }
-    throw e
-  }
+  return groundSummaryAgainstTranscript(raw, trimmed)
 }

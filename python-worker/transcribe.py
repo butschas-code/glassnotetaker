@@ -42,8 +42,16 @@ def format_ts(seconds: float) -> str:
     return f"{m:02d}:{sec:02d}"
 
 
-def merge_two_tracks(system_path: Path, mic_path: Path, out_wav: Path) -> None:
-    """Mono mix (equal weight) for ASR/diarization — see README for limitations."""
+def merge_two_tracks(system_path: Path, mic_path: Path, out_wav: Path, mic_gain_db: float = 0.0) -> None:
+    """Mono mix for ASR/diarization — optional mic gain (dB) on the mic input before mixing."""
+    gain = max(0.0, min(24.0, float(mic_gain_db)))
+    if gain != 0.0:
+        filter_complex = (
+            f"[1:a]volume={gain}dB[mic];"
+            "[0:a][mic]amix=inputs=2:duration=longest:dropout_transition=2[aout]"
+        )
+    else:
+        filter_complex = "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[aout]"
     cmd = [
         "ffmpeg",
         "-y",
@@ -52,7 +60,7 @@ def merge_two_tracks(system_path: Path, mic_path: Path, out_wav: Path) -> None:
         "-i",
         str(mic_path),
         "-filter_complex",
-        "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=2[aout]",
+        filter_complex,
         "-map",
         "[aout]",
         "-ar",
@@ -99,7 +107,18 @@ def run_faster_whisper_fallback(
     compute = "int8" if device == "cpu" else "float16"
     model = WhisperModel(model_size, device=device if device != "mps" else "cpu", compute_type=compute)
     lang = None if language == "auto" else language
-    segments_iter, info = model.transcribe(str(audio_path), language=lang, vad_filter=True)
+    segments_iter, info = model.transcribe(
+        str(audio_path),
+        language=lang,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 500},
+        no_speech_threshold=0.6,
+        log_prob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
+        condition_on_previous_text=False,
+        temperature=0.0,
+        hallucination_silence_threshold=2.0,
+    )
     segs: list[dict[str, Any]] = []
     duration = 0.0
     for seg in segments_iter:
@@ -147,11 +166,22 @@ def run_whisperx(
 
     eprint_progress("transcribe", "whisperx load + transcribe")
     audio = whisperx.load_audio(str(audio_path))
+    # Anti-hallucination ASR options. Whisper fabricates text on silence, music,
+    # and poor-SNR segments unless these thresholds are tightened.
+    asr_options = {
+        "no_speech_threshold": 0.6,
+        "log_prob_threshold": -1.0,
+        "compression_ratio_threshold": 2.4,
+        "condition_on_previous_text": False,
+        "temperatures": [0.0],
+        "hallucination_silence_threshold": 2.0,
+    }
     model = whisperx.load_model(
         model_name,
         device,
         compute_type=compute_type,
         language=language,
+        asr_options=asr_options,
     )
     result = model.transcribe(audio, batch_size=batch_size)
     detected_lang = result.get("language")
@@ -231,9 +261,15 @@ def main() -> int:
     parser.add_argument("--diarize", action="store_true")
     parser.add_argument("--no-diarize", action="store_true")
     parser.add_argument("--hf-token", default="", help="Hugging Face token for pyannote (or set HF_TOKEN)")
-    parser.add_argument("--whisperx-model", default="large-v2")
+    parser.add_argument("--whisperx-model", default="large-v3")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--faster-model", default="small", help="faster_whisper model id when backend=faster_whisper or fallback")
+    parser.add_argument(
+        "--mic-gain-db",
+        type=float,
+        default=0.0,
+        help="Gain (dB) applied to microphone track before mixing with system audio (0–24 typical)",
+    )
     args = parser.parse_args()
 
     if args.backend == "vibevocal_asr":
@@ -254,11 +290,12 @@ def main() -> int:
     work_audio = primary
     tmp_wav: Path | None = None
     mic_path = Path(args.input_mic) if args.input_mic.strip() else None
+    mic_gain_db = max(0.0, min(24.0, float(args.mic_gain_db)))
     if mic_path and mic_path.is_file():
         eprint_progress("prepare", "mixing system + microphone to mono WAV")
         tmp_wav = Path(tempfile.mkdtemp(prefix="glasscall_")) / "mixed.wav"
         try:
-            merge_two_tracks(primary, mic_path, tmp_wav)
+            merge_two_tracks(primary, mic_path, tmp_wav, mic_gain_db)
             work_audio = tmp_wav
         except Exception as ex:  # noqa: BLE001
             sys.stderr.write(f"ffmpeg mix failed, using system track only: {ex}\n")

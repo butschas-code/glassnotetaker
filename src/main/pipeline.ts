@@ -40,7 +40,7 @@ export async function startRecordingSession(onProgress: ProgressFn): Promise<{ r
   updateRecording(row.id, { audio_path: audioPath })
   activeRecordingId = row.id
 
-  const capture = new SystemAudioCapture(audioPath)
+  const capture = new SystemAudioCapture(audioPath, { micGainDb: settings.micInputGainDb })
   activeCapture = capture
 
   try {
@@ -123,6 +123,7 @@ export async function stopRecordingAndProcess(onProgress: ProgressFn): Promise<v
   let summarizerText: string
   let transcriptPath: string
   let transcriptJsonPath: string
+  let detectedLanguage: string | null = null
   try {
     const tr = await runTranscription(audioPath, settings, {
       outDir,
@@ -133,6 +134,7 @@ export async function stopRecordingAndProcess(onProgress: ProgressFn): Promise<v
     summarizerText = tr.summarizerText
     transcriptPath = tr.transcriptPath
     transcriptJsonPath = tr.transcriptJsonPath
+    detectedLanguage = tr.language
     if (durationSec <= 0 && tr.durationSeconds > 0) {
       durationSec = tr.durationSeconds
     }
@@ -157,7 +159,7 @@ export async function stopRecordingAndProcess(onProgress: ProgressFn): Promise<v
 
   let summary: MeetingSummaryJson
   try {
-    summary = await summarizeTranscriptWithLmStudio(summarizerText, settings)
+    summary = await summarizeTranscriptWithLmStudio(summarizerText, settings, detectedLanguage)
   } catch (e) {
     const msg = (e as Error).message
     updateRecording(recId, {
@@ -278,6 +280,7 @@ export async function retryRecording(recId: string, onProgress: ProgressFn): Pro
   let summarizerText: string
   let transcriptPath: string
   let transcriptJsonPath: string
+  let detectedLanguage: string | null = null
   try {
     const tr = await runTranscription(row.audio_path, settings, {
       outDir,
@@ -286,6 +289,7 @@ export async function retryRecording(recId: string, onProgress: ProgressFn): Pro
     summarizerText = tr.summarizerText
     transcriptPath = tr.transcriptPath
     transcriptJsonPath = tr.transcriptJsonPath
+    detectedLanguage = tr.language
   } catch (e) {
     const msg = (e as Error).message
     updateRecording(recId, {
@@ -307,7 +311,7 @@ export async function retryRecording(recId: string, onProgress: ProgressFn): Pro
 
   let summary: MeetingSummaryJson
   try {
-    summary = await summarizeTranscriptWithLmStudio(summarizerText, settings)
+    summary = await summarizeTranscriptWithLmStudio(summarizerText, settings, detectedLanguage)
   } catch (e) {
     const msg = (e as Error).message
     updateRecording(recId, {
