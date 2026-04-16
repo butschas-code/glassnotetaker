@@ -78,22 +78,95 @@ Rules:
 Consolidated notes:
 {{NOTES}}`
 
+// Tolerant shapes: small local models frequently drop keys, emit `null`, or
+// wrap single items in objects. We accept "missing" as "empty" rather than
+// crashing the whole pipeline on a single flaky chunk.
 const ActionItemSchema = z.object({
-  task: z.string(),
-  owner: z.string(),
-  due: z.string()
+  task: z.string().min(1),
+  owner: z.string().default(''),
+  due: z.string().default('')
 })
 
 export const MeetingSummarySchema = z.object({
-  title: z.string(),
-  summary: z.string(),
-  participants: z.array(z.string()),
-  decisions: z.array(z.string()),
-  action_items: z.array(ActionItemSchema)
+  title: z.string().default(''),
+  summary: z.string().default(''),
+  participants: z.array(z.string()).default([]),
+  decisions: z.array(z.string()).default([]),
+  action_items: z.array(ActionItemSchema).default([])
 })
 
-const ChunkFactsSchema = MeetingSummarySchema.omit({ title: true, summary: true })
+const ChunkFactsSchema = z.object({
+  participants: z.array(z.string()).default([]),
+  decisions: z.array(z.string()).default([]),
+  action_items: z.array(ActionItemSchema).default([])
+})
 type ChunkFacts = z.infer<typeof ChunkFactsSchema>
+
+/**
+ * Normalize common model mistakes before validation:
+ * - top-level array becomes empty facts (nothing to extract)
+ * - null / undefined fields become []
+ * - string-or-object action items get coerced to {task, owner:'', due:''}
+ * - wrapper keys like {"facts": {...}} or {"result": {...}} are unwrapped
+ */
+function coerceChunkFactsShape(value: unknown): unknown {
+  if (value == null) return {}
+  if (Array.isArray(value)) return {}
+  if (typeof value !== 'object') return {}
+
+  let obj = value as Record<string, unknown>
+
+  // Unwrap common envelopes (Qwen/Gemma sometimes wrap everything).
+  const wrapperKeys = ['facts', 'result', 'data', 'output', 'json', 'response']
+  for (const k of wrapperKeys) {
+    const inner = obj[k]
+    if (
+      inner &&
+      typeof inner === 'object' &&
+      !Array.isArray(inner) &&
+      ('participants' in inner || 'decisions' in inner || 'action_items' in inner)
+    ) {
+      obj = inner as Record<string, unknown>
+      break
+    }
+  }
+
+  const asStringArray = (x: unknown): string[] => {
+    if (x == null) return []
+    if (Array.isArray(x)) return x.filter((v) => typeof v === 'string' && v.trim().length > 0) as string[]
+    if (typeof x === 'string' && x.trim().length > 0) return [x]
+    return []
+  }
+
+  const asActionItems = (x: unknown): unknown[] => {
+    if (x == null) return []
+    const arr = Array.isArray(x) ? x : [x]
+    return arr
+      .map((item) => {
+        if (typeof item === 'string' && item.trim().length > 0) {
+          return { task: item.trim(), owner: '', due: '' }
+        }
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const it = item as Record<string, unknown>
+          const task = typeof it.task === 'string' ? it.task.trim() : ''
+          if (!task) return null
+          return {
+            task,
+            owner: typeof it.owner === 'string' ? it.owner : '',
+            due: typeof it.due === 'string' ? it.due : ''
+          }
+        }
+        return null
+      })
+      .filter((x) => x !== null)
+  }
+
+  return {
+    participants: asStringArray(obj.participants),
+    decisions: asStringArray(obj.decisions),
+    action_items: asActionItems(obj.action_items)
+  }
+}
 
 const TitleSummarySchema = z.object({
   title: z.string(),
@@ -180,7 +253,17 @@ async function callLmStudio(
 function parseAndValidate(content: string): MeetingSummaryJson {
   const jsonStr = extractJsonObject(content)
   const parsed = JSON.parse(jsonStr)
-  const validated = MeetingSummarySchema.safeParse(parsed)
+  // Reuse chunk-facts coercion for arrays, then overlay title/summary.
+  const coercedArrays = coerceChunkFactsShape(parsed) as Record<string, unknown>
+  const merged =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? {
+          title: typeof (parsed as Record<string, unknown>).title === 'string' ? (parsed as Record<string, unknown>).title : '',
+          summary: typeof (parsed as Record<string, unknown>).summary === 'string' ? (parsed as Record<string, unknown>).summary : '',
+          ...coercedArrays
+        }
+      : { title: '', summary: '', ...coercedArrays }
+  const validated = MeetingSummarySchema.safeParse(merged)
   if (!validated.success) {
     throw new Error(`Schema mismatch: ${validated.error.message}`)
   }
@@ -189,10 +272,14 @@ function parseAndValidate(content: string): MeetingSummaryJson {
 
 function parseChunkFacts(content: string): ChunkFacts {
   const jsonStr = extractJsonObject(content)
+  // JSON.parse failure is recoverable — let it throw so the retry loop re-prompts.
   const parsed = JSON.parse(jsonStr)
-  const validated = ChunkFactsSchema.safeParse(parsed)
+  const coerced = coerceChunkFactsShape(parsed)
+  const validated = ChunkFactsSchema.safeParse(coerced)
   if (!validated.success) {
-    throw new Error(`Schema mismatch: ${validated.error.message}`)
+    // JSON was valid but shape is wrong even after coercion — accept as "no facts"
+    // rather than failing the whole pipeline on a single flaky chunk.
+    return { participants: [], decisions: [], action_items: [] }
   }
   return validated.data
 }

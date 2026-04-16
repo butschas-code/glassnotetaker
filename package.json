@@ -1,6 +1,6 @@
 {
   "name": "glasscall-notes",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "GlassCall Notes — local-first macOS meeting notes from system audio",
   "main": "out/main/index.js",
   "type": "module",
